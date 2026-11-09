@@ -7,6 +7,9 @@ import datetime
 import string
 from flask import Flask
 
+# --- ИМПОРТИРУЕМ НАШ СКРИПТ ШЕРЛОКА ---
+import username_search
+
 # --- Настройка веб-сервера для Render ---
 app = Flask(__name__)
 
@@ -14,7 +17,8 @@ app = Flask(__name__)
 def home():
     return "Bot is running"
 
-TOKEN = os.environ.get('TELEGRAM_TOKEN', '9233836335:AAFK2NyHR6sgjllDr0nNABT09h34GeFcytk')
+# Берем токен из переменных окружения Render (безопасно!)
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 # --- Настройка базы данных (SQLite) ---
@@ -43,10 +47,12 @@ def get_main_menu():
     btn_rate = types.InlineKeyboardButton("🎲 Оценить меня", callback_data='rate')
     btn_buy = types.InlineKeyboardButton("⭐ Купить подписку", callback_data='buy')
     btn_activate = types.InlineKeyboardButton("🔑 Активировать токен", callback_data='activate')
+    btn_search = types.InlineKeyboardButton("🔍 Проверить ник", callback_data='search_nick')
     
     markup.row(btn_help, btn_about)
     markup.row(btn_rate)
     markup.row(btn_buy, btn_activate)
+    markup.row(btn_search)
     return markup
 
 # --- Обработка /start ---
@@ -66,13 +72,13 @@ def callback_handler(call):
     if call.data == 'help':
         bot.edit_message_text(
             chat_id=call.message.chat.id, message_id=call.message.message_id,
-            text="📌 <b>Помощь</b>\n\nКупи подписку и активируй токен, чтобы получить доступ к платным функциям.", 
+            text="📌 <b>Помощь</b>\n\nКупи подписку и активируй токен, чтобы получить доступ к платным функциям (например, проверка ников).", 
             parse_mode='HTML', reply_markup=get_main_menu()
         )
     elif call.data == 'about':
         bot.edit_message_text(
             chat_id=call.message.chat.id, message_id=call.message.message_id,
-            text="ℹ️ <b>О боте</b>\n\nУчебный проект. Версия 2.0", 
+            text="ℹ️ <b>О боте</b>\n\nУчебный проект. Версия 3.0", 
             parse_mode='HTML', reply_markup=get_main_menu()
         )
     elif call.data == 'activate':
@@ -102,6 +108,36 @@ def callback_handler(call):
             currency="XTR",
             prices=prices
         )
+    # --- ОБРАБОТКА КНОПКИ ПРОВЕРКИ НИКА ---
+    elif call.data == 'search_nick':
+        user_id = call.from_user.id
+        conn = sqlite3.connect('tokens.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT end_date FROM tokens WHERE activated_by = ?", (user_id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id, message_id=call.message.message_id,
+                text="⛔ У тебя нет активной подписки. Купи её в меню, чтобы пользоваться проверкой ников.",
+                reply_markup=get_main_menu()
+            )
+            return
+
+        end_date_str = result[0]
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+        
+        if datetime.datetime.now() > end_date:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id, message_id=call.message.message_id,
+                text="⛔ Твоя подписка истекла. Купи новую, чтобы пользоваться проверкой ников.",
+                reply_markup=get_main_menu()
+            )
+            return
+
+        msg = bot.send_message(call.message.chat.id, "Введи никнейм, который хочешь проверить (без @):")
+        bot.register_next_step_handler(msg, process_nick_search)
 
 # --- Обработка успешной оплаты ---
 @bot.message_handler(content_types=['successful_payment'])
@@ -142,7 +178,31 @@ def process_activate(message):
     
     conn.close()
 
-# --- РЕЖИМ РАЗРАБОТЧИКА (ТВОИ КОМАНДЫ) ---
+# --- ФУНКЦИЯ ЗАПУСКА ШЕРЛОКА ---
+def process_nick_search(message):
+    nick = message.text.strip().replace('@', '')
+    
+    msg = bot.reply_to(message, f"🔍 Ищу ник <b>{nick}</b> на разных платформах... Пожалуйста, подожди.", parse_mode='HTML')
+    
+    try:
+        results = username_search.search(nick, workers=10)
+        
+        response = f"🔎 <b>Результаты для {nick}:</b>\n\n"
+        for r in results:
+            if r['status'] == 'taken':
+                response += f"✅ {r['site']}: Занят\n"
+            elif r['status'] == 'free':
+                response += f"❌ {r['site']}: Свободен\n"
+        
+        if len(response) > 4000:
+            response = response[:4000] + "\n\n... (список обрезан)"
+            
+        bot.edit_message_text(chat_id=msg.chat.id, message_id=msg.message_id, text=response, parse_mode='HTML')
+        
+    except Exception as e:
+        bot.edit_message_text(chat_id=msg.chat.id, message_id=msg.message_id, text=f"❌ Ошибка при проверке: {e}")
+
+# --- РЕЖИМ РАЗРАБОТЧИКА ---
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != 5863785374: # <--- ЗАМЕНИ НА СВОЙ ID
@@ -167,7 +227,6 @@ def admin_gen(message):
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     text = message.text
-    # Если это команда (начинается с /), мы её просто игнорируем здесь
     if text.startswith('/'):
         return
         
