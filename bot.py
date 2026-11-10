@@ -10,6 +10,9 @@ from flask import Flask
 # --- ИМПОРТИРУЕМ НАШ СКРИПТ ШЕРЛОКА ---
 import username_search
 
+# --- ИМПОРТ ПРОБИВА ---
+import prober
+
 # --- Настройка веб-сервера для Render ---
 app = Flask(__name__)
 
@@ -48,11 +51,12 @@ def get_main_menu():
     btn_buy = types.InlineKeyboardButton("⭐ Купить подписку", callback_data='buy')
     btn_activate = types.InlineKeyboardButton("🔑 Активировать токен", callback_data='activate')
     btn_search = types.InlineKeyboardButton("🔍 Проверить ник", callback_data='search_nick')
-    
+    btn_phone = types.InlineKeyboardButton("📱 Пробив номера", callback_data='phone_probe')
+
     markup.row(btn_help, btn_about)
     markup.row(btn_rate)
     markup.row(btn_buy, btn_activate)
-    markup.row(btn_search)
+    markup.row(btn_search, btn_phone)
     return markup
 
 # --- Обработка /start ---
@@ -139,6 +143,37 @@ def callback_handler(call):
         msg = bot.send_message(call.message.chat.id, "Введи никнейм, который хочешь проверить (без @):")
         bot.register_next_step_handler(msg, process_nick_search)
 
+    # --- ОБРАБОТКА КНОПКИ ПРОБИВА НОМЕРА ---
+    elif call.data == 'phone_probe':
+        user_id = call.from_user.id
+        conn = sqlite3.connect('tokens.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT end_date FROM tokens WHERE activated_by = ?", (user_id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id, message_id=call.message.message_id,
+                text="⛔ У тебя нет активной подписки. Купи её в меню, чтобы пользоваться пробивом.",
+                reply_markup=get_main_menu()
+            )
+            return
+
+        end_date_str = result[0]
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+
+        if datetime.datetime.now() > end_date:
+            bot.edit_message_text(
+                chat_id=call.message.chat.id, message_id=call.message.message_id,
+                text="⛔ Твоя подписка истекла. Купи новую, чтобы пользоваться пробивом.",
+                reply_markup=get_main_menu()
+            )
+            return
+
+        msg = bot.send_message(call.message.chat.id, "Введи номер в формате +79...:")
+        bot.register_next_step_handler(msg, process_phone_probe)
+
 # --- Обработка успешной оплаты ---
 @bot.message_handler(content_types=['successful_payment'])
 def got_payment(message):
@@ -201,6 +236,36 @@ def process_nick_search(message):
         
     except Exception as e:
         bot.edit_message_text(chat_id=msg.chat.id, message_id=msg.message_id, text=f"❌ Ошибка при проверке: {e}")
+
+# --- ФУНКЦИЯ ПРОБИВА НОМЕРА ---
+def process_phone_probe(message):
+    phone = message.text.strip()
+
+    if not phone.startswith('+'):
+        bot.reply_to(message, "❌ Нужен формат с плюсом: +79...")
+        return
+
+    msg = bot.reply_to(message, f"🔍 Проверяю {phone} в Telegram...")
+    result = prober.tg_lookup_sync(phone)
+
+    if result.get("error"):
+        bot.edit_message_text(
+            chat_id=msg.chat.id, message_id=msg.message_id,
+            text=f"⚠️ {result['error']}"
+        )
+        return
+
+    if result["exists"]:
+        text = (
+            f"✅ <b>Найден в Telegram</b>\n\n"
+            f"ID: <code>{result['id']}</code>\n"
+            f"Юзер: @{result['username'] or '—'}\n"
+            f"Имя: {result['name'] or '—'}"
+        )
+    else:
+        text = "❌ В Telegram не найден (или скрыт настройками)."
+
+    bot.edit_message_text(chat_id=msg.chat.id, message_id=msg.message_id, text=text, parse_mode='HTML')
 
 # --- РЕЖИМ РАЗРАБОТЧИКА ---
 @bot.message_handler(commands=['admin'])
