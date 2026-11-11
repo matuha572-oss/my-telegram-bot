@@ -3,48 +3,36 @@ import random
 import asyncio
 import concurrent.futures
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContactsRequest
 from telethon.tl.types import InputPhoneContact
 from telethon.errors import FloodWaitError
 
 API_ID = int(os.getenv("TG_API_ID", "0"))
 API_HASH = os.getenv("TG_API_HASH", "")
-SESSIONS_DIR = os.getenv("SESSIONS_DIR", "sessions")
 
-_pool = []
+_raw = os.getenv("TG_SESSIONS", "")
+SESSIONS = [s.strip() for s in _raw.split(",") if s.strip()]
+
 _idx = 0
 
-
-def _load_sessions():
-    if not os.path.isdir(SESSIONS_DIR):
-        return []
-    return [
-        os.path.join(SESSIONS_DIR, f[:-8])
-        for f in os.listdir(SESSIONS_DIR)
-        if f.endswith(".session")
-    ]
-
-
 async def _get_client():
-    global _pool, _idx
-    if not _pool:
-        _pool = _load_sessions()
-    if not _pool:
+    global _idx
+    if not SESSIONS:
         return None
-    path = _pool[_idx % len(_pool)]
+    session_str = SESSIONS[_idx % len(SESSIONS)]
     _idx += 1
-    client = TelegramClient(path, API_ID, API_HASH)
+    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
     await client.connect()
     if not await client.is_user_authorized():
         await client.disconnect()
         return None
     return client
 
-
 async def tg_lookup(phone: str) -> dict:
     client = await _get_client()
     if not client:
-        return {"error": "нет живых сессий (положи .session в sessions/)"}
+        return {"error": "нет сессий (добавь TG_SESSIONS в env)"}
     try:
         contact = InputPhoneContact(
             client_id=random.randint(1, 10**9),
@@ -71,7 +59,6 @@ async def tg_lookup(phone: str) -> dict:
         return {"error": str(e)}
     finally:
         await client.disconnect()
-
 
 def tg_lookup_sync(phone: str) -> dict:
     def _run():
